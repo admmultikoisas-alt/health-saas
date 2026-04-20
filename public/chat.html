@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Consulting… – Individual Consult</title>
+  <link rel="stylesheet" href="/style.css"/>
+</head>
+<body>
+
+<div class="chat-page" id="chatPage">
+
+  <!-- Header -->
+  <header class="site-header">
+    <a href="/" class="back-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <path d="M19 12H5M5 12l7 7M5 12l7-7"/>
+      </svg>
+    </a>
+    <img src="https://i.postimg.cc/CKD0rSsN/logo.png" alt="Individual Consult" class="logo"/>
+  </header>
+
+  <!-- Specialist bar -->
+  <div class="specialist-bar">
+    <img id="spAvatar" src="" alt=""/>
+    <div class="info">
+      <div class="name" id="spName">Loading…</div>
+      <div class="title" id="spTitle"></div>
+      <div class="online-badge"><span class="dot"></span> Online now</div>
+    </div>
+  </div>
+
+  <!-- Messages -->
+  <div class="messages-area" id="messagesArea"></div>
+
+  <!-- Input -->
+  <div class="input-area">
+    <textarea
+      id="userInput"
+      placeholder="Type your message…"
+      rows="1"
+      onkeydown="handleKey(event)"
+      oninput="autoResize(this)"
+    ></textarea>
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()" aria-label="Send">
+      <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
+    </button>
+  </div>
+
+  <div class="disclaimer">
+    Educational support only. This does not replace in-person medical care.<br/>
+    If you face an emergency, call local emergency services.
+  </div>
+
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     PREMIUM POPUP
+══════════════════════════════════════════════════════ -->
+<div class="premium-overlay" id="premiumOverlay">
+  <div class="premium-modal">
+    <div class="premium-icon">⭐</div>
+    <h2>You've reached the free limit</h2>
+    <p>Free consultations are limited for each specialist.<br/>Upgrade to <strong>Premium</strong> for unlimited 24/7 access to all specialists.</p>
+
+    <div class="premium-price">
+      <span class="price-amount">$9.90</span>
+      <span class="price-period">/ month</span>
+    </div>
+
+    <ul class="premium-features">
+      <li>✓ Unlimited consultations — all specialists</li>
+      <li>✓ Priority responses, no waiting</li>
+      <li>✓ Full meal plans &amp; workout library</li>
+      <li>✓ Cancel anytime</li>
+    </ul>
+
+    <button class="btn-premium" id="checkoutBtn" onclick="startCheckout()">
+      <span id="checkoutLabel">Upgrade to Premium — $9.90/mo</span>
+    </button>
+
+    <button class="btn-dismiss" onclick="closePremium()">Maybe later</button>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────
+const pathParts = location.pathname.split('/').filter(Boolean);
+const specialistSlug = pathParts[1] || '';
+
+let specialist = null;
+let messages = [];
+let isStreaming = false;
+let consultCount = 0;
+const FREE_LIMIT = 2;
+const isPremium = () => localStorage.getItem('ic_premium') === '1';
+
+// ── Init ───────────────────────────────────────────────
+async function init() {
+  try {
+    const res = await fetch(`/api/specialist/${specialistSlug}`);
+    if (!res.ok) { showError('Specialist not found.'); return; }
+    specialist = await res.json();
+
+    document.title = `${specialist.name} – Individual Consult`;
+    document.getElementById('spAvatar').src = specialist.avatar;
+    document.getElementById('spName').textContent = specialist.name;
+    document.getElementById('spTitle').textContent = specialist.title;
+
+    // Welcome message — display only, not in history
+    appendMessage('bot', specialist.welcome, specialist.avatar);
+
+    document.getElementById('userInput').focus();
+  } catch (e) {
+    showError('Could not connect to server. Is it running?');
+  }
+}
+
+// ── Send message ───────────────────────────────────────
+async function sendMessage() {
+  const input = document.getElementById('userInput');
+  const text = input.value.trim();
+  if (!text || isStreaming) return;
+
+  input.value = '';
+  autoResize(input);
+
+  messages.push({ role: 'user', content: text });
+  appendMessage('user', text);
+
+  isStreaming = true;
+  document.getElementById('sendBtn').disabled = true;
+
+  const typingId = appendTyping();
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: specialistSlug, messages })
+    });
+
+    // Rate limited
+    if (res.status === 429) {
+      removeEl(typingId);
+      if (!isPremium() && consultCount >= FREE_LIMIT) {
+        showPremium();
+      } else {
+        appendMessage('bot', '⚠️ Servidor ocupado no momento. Aguarde alguns segundos e tente novamente.', specialist?.avatar);
+      }
+      isStreaming = false;
+      document.getElementById('sendBtn').disabled = false;
+      return;
+    }
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      removeEl(typingId);
+      if (err.rateLimited && !isPremium() && consultCount >= FREE_LIMIT) {
+        showPremium();
+      } else {
+        appendMessage('bot', friendlyError(err.error || '', false), specialist?.avatar);
+      }
+      isStreaming = false;
+      document.getElementById('sendBtn').disabled = false;
+      return;
+    }
+
+    // Stream response
+    removeEl(typingId);
+    const botMsgId = appendMessage('bot', '', specialist?.avatar);
+    const bubble = document.querySelector(`#${botMsgId} .bubble`);
+
+    let fullText = '';
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') break;
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.rateLimited || (parsed.error && (parsed.error.includes('429') || parsed.error.includes('quota')))) {
+            if (!isPremium() && consultCount >= FREE_LIMIT) {
+              showPremium();
+            } else {
+              appendMessage('bot', '⚠️ Servidor ocupado. Aguarde alguns segundos e tente novamente.', specialist?.avatar);
+            }
+            break;
+          }
+          if (parsed.error) { fullText = friendlyError(parsed.error, false); bubble.innerHTML = fullText; break; }
+          if (parsed.text) {
+            fullText += parsed.text;
+            bubble.innerHTML = renderMarkdown(fullText);
+            scrollToBottom();
+          }
+        } catch {}
+      }
+    }
+
+    if (fullText && !fullText.startsWith('⚠️')) {
+      messages.push({ role: 'assistant', content: fullText });
+      consultCount++;
+      if (!isPremium() && consultCount >= FREE_LIMIT) showPremium();
+    }
+
+  } catch (e) {
+    removeEl(typingId);
+    appendMessage('bot', '⚠️ Connection error. Please try again.', specialist?.avatar);
+  }
+
+  isStreaming = false;
+  document.getElementById('sendBtn').disabled = false;
+  document.getElementById('userInput').focus();
+}
+
+// ── Premium popup ──────────────────────────────────────
+function showPremium() {
+  document.getElementById('premiumOverlay').classList.add('open');
+}
+function closePremium() {
+  document.getElementById('premiumOverlay').classList.remove('open');
+}
+
+async function startCheckout() {
+  const btn = document.getElementById('checkoutBtn');
+  const label = document.getElementById('checkoutLabel');
+  btn.disabled = true;
+  label.textContent = 'Redirecting…';
+
+  try {
+    const res = await fetch('/api/create-checkout', { method: 'POST' });
+    const data = await res.json();
+
+    if (data.url) {
+      window.location.href = data.url;
+    } else {
+      alert('Stripe not configured yet. Add your STRIPE keys to .env to enable payments.');
+      btn.disabled = false;
+      label.textContent = 'Upgrade to Premium — $9.90/mo';
+    }
+  } catch (e) {
+    alert('Could not connect to payment service. Try again.');
+    btn.disabled = false;
+    label.textContent = 'Upgrade to Premium — $9.90/mo';
+  }
+}
+
+// ── DOM helpers ────────────────────────────────────────
+function appendMessage(role, text, avatar) {
+  const area = document.getElementById('messagesArea');
+  const id = 'msg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.id = id;
+
+  if (role === 'bot') {
+    div.innerHTML = `<img class="avatar" src="${avatar || ''}" alt=""/>
+      <div class="bubble">${renderMarkdown(text)}</div>`;
+  } else {
+    div.innerHTML = `<div class="bubble">${escHtml(text)}</div>`;
+  }
+
+  area.appendChild(div);
+  scrollToBottom();
+  return id;
+}
+
+function appendTyping() {
+  const area = document.getElementById('messagesArea');
+  const id = 'typing-' + Date.now();
+  const div = document.createElement('div');
+  div.className = 'msg bot';
+  div.id = id;
+  div.innerHTML = `<img class="avatar" src="${specialist?.avatar || ''}" alt=""/>
+    <div class="bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>`;
+  area.appendChild(div);
+  scrollToBottom();
+  return id;
+}
+
+function removeEl(id) { document.getElementById(id)?.remove(); }
+function scrollToBottom() {
+  const a = document.getElementById('messagesArea');
+  a.scrollTop = a.scrollHeight;
+}
+function showError(msg) {
+  document.getElementById('messagesArea').innerHTML =
+    `<div style="text-align:center;padding:40px;color:#888">${msg}</div>`;
+}
+
+// ── Error messages ─────────────────────────────────────
+function friendlyError(msg, rateLimited) {
+  if (rateLimited || msg.includes('429') || msg.includes('quota') || msg.includes('Too Many')) {
+    return '⚠️ Free limit reached for this specialist.';
+  }
+  if (msg.includes('403') || msg.includes('API_KEY')) return '⚠️ API key issue. Check .env configuration.';
+  return '⚠️ Could not get a response. Please try again.';
+}
+
+// ── Minimal markdown ───────────────────────────────────
+function renderMarkdown(text) {
+  if (!text) return '';
+  return escHtml(text)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^[-•]\s(.+)$/gm, '<li>$1</li>')
+    .replace(/^(\d+)\.\s(.+)$/gm, '<li>$2</li>')
+    .replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>')
+    .replace(/<\/ul>\s*<ul>/g, '')
+    .replace(/\n{2,}/g, '</p><p>')
+    .replace(/\n/g, '<br/>')
+    .replace(/^(?!<)/, '<p>')
+    .replace(/(?<![>])$/, '</p>');
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Keyboard & textarea ────────────────────────────────
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 140) + 'px';
+}
+
+// Close premium on overlay click
+document.getElementById('premiumOverlay').addEventListener('click', function(e) {
+  if (e.target === this) closePremium();
+});
+
+init();
+</script>
+</body>
+</html>

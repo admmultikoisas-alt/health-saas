@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Welcome to Premium – Individual Consult</title>
+  <link rel="stylesheet" href="/style.css"/>
+  <style>
+    .success-page { text-align:center; padding: 80px 24px; max-width: 480px; margin: 0 auto; }
+    .success-icon { font-size: 72px; margin-bottom: 24px; }
+    .success-page h1 { font-size: 28px; font-weight: 800; margin-bottom: 12px; }
+    .success-page p { font-size: 16px; color: #666; line-height: 1.7; margin-bottom: 32px; }
+    .btn-home { display:inline-block; padding:14px 36px; background:#1a1a1a; color:#fff; border-radius:12px; font-size:16px; font-weight:700; transition:.2s; }
+    .btn-home:hover { background:#333; }
+    .verifying { font-size:14px; color:#888; margin-bottom:16px; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <img src="https://i.postimg.cc/CKD0rSsN/logo.png" alt="Individual Consult" class="logo"/>
+  </header>
+  <div class="success-page">
+    <div class="success-icon">🎉</div>
+    <h1>Welcome to Premium!</h1>
+    <p class="verifying" id="verifyMsg">Activating your account…</p>
+    <p>You now have unlimited access to all health specialists, 24/7 — no limits, no waiting.</p>
+    <a href="/" class="btn-home">Start Consulting →</a>
+  </div>
+  <script>
+    (async () => {
+      const params = new URLSearchParams(location.search);
+      const sessionId = params.get('session_id');
+      if (!sessionId) {
+        document.getElementById('verifyMsg').textContent = '';
+        return;
+      }
+      try {
+        const res = await fetch(`/api/verify-payment?session_id=${encodeURIComponent(sessionId)}`);
+        const data = await res.json();
+        if (data.premium) {
+          localStorage.setItem('ic_premium', '1');
+          if (data.email) localStorage.setItem('ic_email', data.email);
+        }
+      } catch {}
+      document.getElementById('verifyMsg').textContent = '';
+    })();
+  </script>
+</body>
+</html>
